@@ -1,0 +1,207 @@
+name: Build Kanyatsi Restaurant APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Locate Flutter project
+        id: project
+        shell: bash
+        run: |
+          if [ -f pubspec.yaml ]; then
+            echo "path=." >> "$GITHUB_OUTPUT"
+          elif [ -f kagando_akanyatsi_restaurant_app/pubspec.yaml ]; then
+            echo "path=kagando_akanyatsi_restaurant_app" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not find pubspec.yaml."
+            find . -maxdepth 4 -name pubspec.yaml
+            exit 1
+          fi
+
+      - name: Make sure main.dart is in lib/
+        working-directory: ${{ steps.project.outputs.path }}
+        shell: bash
+        run: |
+          mkdir -p lib
+          if [ ! -f lib/main.dart ] && [ -f main.dart ]; then
+            mv main.dart lib/main.dart
+          fi
+          test -f lib/main.dart
+          for f in brand.dart stock.dart delivery.dart; do
+            test -f "lib/$f" || { echo "Missing lib/$f - upload the whole lib folder."; exit 1; }
+          done
+          test -f assets/logo.png || { echo "Missing assets folder - upload the whole assets folder."; exit 1; }
+
+      - name: Generate Android platform files
+        working-directory: ${{ steps.project.outputs.path }}
+        shell: bash
+        run: |
+          if [ ! -d android ]; then
+            flutter create . --platforms=android --org com.kagando --project-name kagando_akanyatsi_restaurant
+          fi
+
+      - name: Configure Android (name, permissions, notifications)
+        working-directory: ${{ steps.project.outputs.path }}
+        shell: bash
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+
+          # App name shown under the icon
+          sed -i 's|android:label="[^"]*"|android:label="Kanyatsi Restaurant"|' "$M"
+
+          # Permissions: internet, camera (photos), notifications
+          for perm in INTERNET CAMERA POST_NOTIFICATIONS; do
+            if ! grep -q "android.permission.$perm" "$M"; then
+              sed -i "s|<manifest[^>]*>|&\n    <uses-permission android:name=\"android.permission.$perm\"/>|" "$M"
+            fi
+          done
+          grep -n "uses-permission\|android:label" "$M"
+
+          # Small notification icon
+          mkdir -p android/app/src/main/res/drawable
+          cp assets/ic_stat.png android/app/src/main/res/drawable/ic_stat.png
+
+          # flutter_local_notifications needs "core library desugaring"
+          python3 - <<'PY'
+          import re, pathlib
+          base = pathlib.Path('android/app')
+          kts, groovy = base / 'build.gradle.kts', base / 'build.gradle'
+          if kts.exists():
+              t = kts.read_text()
+              if 'isCoreLibraryDesugaringEnabled' not in t:
+                  t = re.sub(r'(compileOptions\s*\{)', r'\1\n        isCoreLibraryDesugaringEnabled = true', t, count=1)
+              if 'coreLibraryDesugaring(' not in t:
+                  t += '\n\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n'
+              kts.write_text(t)
+              print('patched', kts)
+          elif groovy.exists():
+              t = groovy.read_text()
+              if 'coreLibraryDesugaringEnabled' not in t:
+                  t = re.sub(r'(compileOptions\s*\{)', r'\1\n        coreLibraryDesugaringEnabled true', t, count=1)
+              if 'coreLibraryDesugaring ' not in t:
+                  t += "\n\ndependencies {\n    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'\n}\n"
+              groovy.write_text(t)
+              print('patched', groovy)
+          else:
+              raise SystemExit('No android/app/build.gradle(.kts) found')
+          PY
+          grep -n "esugaring" android/app/build.gradle* 
+
+      - name: Enable push notifications for a closed app (optional)
+        working-directory: ${{ steps.project.outputs.path }}
+        shell: bash
+        run: |
+          if [ ! -f firebase/google-services.json ]; then
+            echo "No firebase/google-services.json found - building WITHOUT push for a closed app."
+            exit 0
+          fi
+          echo "Firebase file found - turning push notifications on"
+          rm -rf /tmp/bak && mkdir -p /tmp/bak/android /tmp/bak/app
+          cp pubspec.yaml /tmp/bak/pubspec.yaml
+          cp lib/push.dart /tmp/bak/push.dart
+          cp android/settings.gradle* android/build.gradle* /tmp/bak/android/ 2>/dev/null || true
+          cp android/app/build.gradle* /tmp/bak/app/ 2>/dev/null || true
+          (
+            set -e
+            flutter pub add firebase_core firebase_messaging
+            cp lib/push_firebase.dart.txt lib/push.dart
+            cp firebase/google-services.json android/app/google-services.json
+            python3 - <<'PY'
+          import re, pathlib
+          a = pathlib.Path('android')
+          done = False
+          for name in ['settings.gradle.kts', 'settings.gradle']:
+              f = a / name
+              if f.exists():
+                  t = f.read_text()
+                  if 'com.google.gms.google-services' not in t:
+                      if name.endswith('.kts'):
+                          t2 = re.sub(r'(plugins\s*\{)', r'\1\n    id("com.google.gms.google-services") version "4.4.3" apply false', t, count=1)
+                      else:
+                          t2 = re.sub(r'(plugins\s*\{)', r"\1\n    id 'com.google.gms.google-services' version '4.4.3' apply false", t, count=1)
+                      if t2 == t:
+                          raise SystemExit('settings plugins block not found')
+                      f.write_text(t2)
+                  done = True
+                  break
+          if not done:
+              raise SystemExit('no settings.gradle found')
+          done = False
+          for name in ['build.gradle.kts', 'build.gradle']:
+              f = a / 'app' / name
+              if f.exists():
+                  t = f.read_text()
+                  if 'com.google.gms.google-services' not in t:
+                      if name.endswith('.kts'):
+                          t2 = re.sub(r'(plugins\s*\{)', r'\1\n    id("com.google.gms.google-services")', t, count=1)
+                      else:
+                          t2 = re.sub(r'(plugins\s*\{)', r"\1\n    id 'com.google.gms.google-services'", t, count=1)
+                      if t2 == t:
+                          raise SystemExit('app plugins block not found')
+                      f.write_text(t2)
+                  done = True
+                  break
+          if not done:
+              raise SystemExit('no app build.gradle found')
+          print('Firebase plugin added to Gradle')
+          PY
+          ) && echo "Push notifications ENABLED" || {
+            echo "::warning::Push notifications could not be enabled. Building without them (the rest of the app is unaffected)."
+            cp /tmp/bak/pubspec.yaml pubspec.yaml
+            cp /tmp/bak/push.dart lib/push.dart
+            cp /tmp/bak/android/* android/ 2>/dev/null || true
+            cp /tmp/bak/app/* android/app/ 2>/dev/null || true
+            rm -f android/app/google-services.json
+          }
+
+      - name: Install dependencies
+        working-directory: ${{ steps.project.outputs.path }}
+        run: flutter pub get
+
+      - name: Make the app icon
+        working-directory: ${{ steps.project.outputs.path }}
+        run: dart run flutter_launcher_icons
+        continue-on-error: true
+
+      - name: Check Flutter code
+        working-directory: ${{ steps.project.outputs.path }}
+        run: flutter analyze --no-pub
+        continue-on-error: true
+
+      - name: Build release APK
+        working-directory: ${{ steps.project.outputs.path }}
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kanyatsi-restaurant-release-apk
+          path: ${{ steps.project.outputs.path }}/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14

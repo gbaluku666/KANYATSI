@@ -1,0 +1,37 @@
+name: kagando_akanyatsi_restaurant
+description: Kanyatsi Restaurant - ordering, kitchen, delivery and stock management app
+publish_to: "none"
+version: 4.0.0+4
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  image_picker: ^1.1.2
+  google_fonts: ^6.2.1
+  flutter_local_notifications: ^19.0.0
+  shared_preferences: ^2.3.2
+  url_launcher: ^6.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo.png
+    - assets/backgrounds/
+    - assets/social/
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon_legacy.png"
+  adaptive_icon_background: "#BB3E10"
+  adaptive_icon_foreground: "assets/icon_fg.png"

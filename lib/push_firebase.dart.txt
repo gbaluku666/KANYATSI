@@ -1,0 +1,32 @@
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+
+@pragma('vm:entry-point')
+Future<void> _backgroundHandler(RemoteMessage message) async {}
+
+// Push notifications for a CLOSED app (Firebase Cloud Messaging).
+class PushService {
+  static bool _started = false;
+
+  static Future<void> init(Future<void> Function(String token) onToken,
+      void Function(String title, String body) onForeground) async {
+    try {
+      if (!_started) {
+        await Firebase.initializeApp();
+        FirebaseMessaging.onBackgroundMessage(_backgroundHandler);
+        FirebaseMessaging.onMessage.listen((m) {
+          final n = m.notification;
+          if (n != null) onForeground(n.title ?? '', n.body ?? '');
+        });
+        _started = true;
+      }
+      final fm = FirebaseMessaging.instance;
+      await fm.requestPermission();
+      final t = await fm.getToken();
+      if (t != null) await onToken(t);
+      fm.onTokenRefresh.listen((t) => onToken(t));
+    } catch (_) {
+      // push is optional: the app keeps working without it
+    }
+  }
+}
